@@ -1,0 +1,7 @@
+{
+  "CounterModule#Counter": "0xF02C4Fd72767349079Bde3Fb6FdBCAA2B458A0eC",
+  "LaunchModule#TokenLauncher": "0x41B61ACD63d5F53479BB8B9d062fE6265CA95971",
+  "LaunchV2Module#TokenLauncher": "0xa15b0249604FE14F15F1fd3699b0CDD838987735",
+  "LaunchV3Module#TokenLauncher": "0xe6827cdA70AA7E7d3D9eB2f28d6c6B75A8C98Cb4",
+  "LaunchV4Module#TokenLauncher": "0x696C7ED992C6efD0A9f08f24Cf647E284eB29890"
+}
