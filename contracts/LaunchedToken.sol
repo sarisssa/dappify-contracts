@@ -4,24 +4,24 @@ pragma solidity ^0.8.28;
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract LaunchedToken is ERC20 {
-    string public projectName;
-    string public projectDescription;
+    address public immutable creator;
+    uint256 public immutable tokenPrice;
     uint256 public startDate;
     uint256 public endDate;
-    uint256 public immutable tokenPrice;
-    address public immutable creator;
+    string public projectName;
+    string public projectDescription;
 
     constructor(
-        string memory _name,
-        string memory _symbol,
+        address _owner,
+        address _launchpad,
         uint256 _totalSupply,
-        string memory _projectName,
-        string memory _projectDescription,
         uint256 _startDate,
         uint256 _endDate,
         uint256 _tokenPrice,
-        address _owner,
-        address _launchpad
+        string memory _name,
+        string memory _symbol,
+        string memory _projectName,
+        string memory _projectDescription
     ) ERC20(_name, _symbol) {
         projectName = _projectName;
         projectDescription = _projectDescription;
