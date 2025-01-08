@@ -1,83 +1,44 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "./LaunchedToken.sol";
 
-contract LaunchedToken is ERC20 {
-    string public projectName;
-    string public projectDescription;
-    uint256 public startDate;
-    uint256 public endDate;
-    uint256 public immutable tokenPrice;
-    address public immutable creator;
+contract TokenLauncher {
+    uint256 private constant DECIMALS = 10 ** 18;
+    uint256 private constant LAUNCHPAD_FEE_DENOMINATOR = 100;
+    uint256 private constant CREATOR_FEE_NUMERATOR = 99;
+    uint256 private constant MIN_DURATION = 30 days;
 
-    constructor(
-        string memory _name,
-        string memory _symbol,
-        uint256 _totalSupply,
-        string memory _projectName,
-        string memory _projectDescription,
-        uint256 _startDate,
-        uint256 _endDate,
-        uint256 _tokenPrice,
-        address _owner,
-        address _launchpad
-    ) ERC20(_name, _symbol) {
-        projectName = _projectName;
-        projectDescription = _projectDescription;
-        startDate = _startDate;
-        endDate = _endDate;
-        tokenPrice = _tokenPrice;
-        creator = _owner;
-        _mint(_launchpad, _totalSupply * 10 ** decimals());
-    }
-}
-
-contract TokenLauncher is ReentrancyGuard {
     struct Project {
         uint256 projectId;
-        address tokenAddress;
-        string name;
-        string symbol;
         uint256 totalSupply;
-        string projectName;
-        string projectDescription;
         uint256 startDate;
         uint256 endDate;
         uint256 tokenPrice;
-        address creator;
-        uint256 launchDate;
         uint256 participantCount;
+        uint256 amountRaised;
+        uint256 targetRaise;
+        address tokenAddress;
+        address creator;
+        string symbol;
+        string projectName;
+        string projectDescription;
+        bool hasCreatorWithdrawn;
     }
 
     struct ProjectWithUserInfo {
         Project project;
         uint256 totalSpent;
-        Purchase[] purchases;
-        bool hasParticipated;
+        uint256 tokenAllocationAmount;
+        uint256 availableTokens;
     }
 
-    struct Purchase {
-        uint256 amount;
-        uint256 cost;
-        uint256 purchaseDate;
-        bool refunded;
-    }
-    uint256 private _nonce;
-    uint256 private _purchaseNonce;
-    uint256 private _projectCount;
-    uint256[] private projectIds;
+    uint256 private _projectIds;
     mapping(uint256 => Project) public projects;
-    mapping(address => uint256[]) public creatorToProjectIds;
-    mapping(uint256 => address[]) private projectBuyers;
-    mapping(uint256 => mapping(address => bool)) private hasParticipated;
-    mapping(uint256 => mapping(address => Purchase[])) public purchases;
-    mapping(uint256 => uint256) public totalRaised;
+    mapping(uint256 => mapping(address => uint256)) public tokenAllocations;
 
     event TokenLaunched(
         address tokenAddress,
-        string name,
         string symbol,
         uint256 totalSupply,
         string projectName,
@@ -89,13 +50,14 @@ contract TokenLauncher is ReentrancyGuard {
         uint256 projectId
     );
 
-    event TokensPurchased(
+    event TokensAllocated(
         uint256 projectId,
         address buyer,
         uint256 amount,
-        uint256 cost,
-        uint256 purchaseId
+        uint256 cost
     );
+
+    event TokensClaimed(uint256 projectId, address claimer, uint256 amount);
 
     event TokensRefunded(
         uint256 projectId,
@@ -119,27 +81,29 @@ contract TokenLauncher is ReentrancyGuard {
     error ProjectNotFound(uint256 projectId);
 
     error SaleNotStarted();
-    error NoPayment();
-    error InsufficientLaunchpadTokens();
-    error TransferFailed();
+    error SaleNotEnded();
+    error NoTokensToClaim();
+    error TokenClaimFailed();
 
-    error NoRefundsAvailable();
+    error SaleEnded();
+    error InvalidTokenAmount();
     error NoTokensToRefund();
     error RefundTooEarly();
     error TargetRaiseAchieved();
     error ETHRefundFailed();
 
+    error CreatorAlreadyWithdrew();
+
     error NotProjectCreator(address caller, address creator);
-    error NoFundsToWithdraw();
     error TargetRaiseNotMet(uint256 current, uint256 target);
-    error WithdrawalFailed(address creator, uint256 amount);
+    error CreatorWithdrawalFailed(address creator, uint256 amount);
 
     modifier isRefundable(uint256 projectId) {
         Project storage project = projects[projectId];
-        if (block.timestamp < project.startDate + 30 days) {
+        if (block.timestamp < project.startDate + MIN_DURATION) {
             revert RefundTooEarly();
         }
-        if (totalRaised[projectId] >= getTargetRaise(projectId)) {
+        if (project.amountRaised >= project.targetRaise) {
             revert TargetRaiseAchieved();
         }
         _;
@@ -155,15 +119,15 @@ contract TokenLauncher is ReentrancyGuard {
         uint256 endDate,
         uint256 tokenPrice
     ) public returns (address) {
-        // if (startDate < block.timestamp) {
-        //     revert StartDateMustBeFuture();
-        // }
+        if (startDate < block.timestamp) {
+            revert StartDateMustBeFuture();
+        }
 
         if (endDate <= startDate) {
             revert EndDateMustBeAfterStart();
         }
 
-        if (endDate < startDate + 30 days) {
+        if (endDate < startDate + MIN_DURATION) {
             revert MinimumDurationNotMet();
         }
 
@@ -187,12 +151,13 @@ contract TokenLauncher is ReentrancyGuard {
             msg.sender,
             address(this)
         );
-        uint256 projectId = generateProjectId();
+
+        uint256 targetRaise = (totalSupply * tokenPrice) / DECIMALS;
+        uint256 projectId = ++_projectIds;
 
         Project memory newProject = Project({
             projectId: projectId,
             tokenAddress: address(newToken),
-            name: name,
             symbol: symbol,
             totalSupply: totalSupply,
             projectName: projectName,
@@ -201,18 +166,16 @@ contract TokenLauncher is ReentrancyGuard {
             endDate: endDate,
             tokenPrice: tokenPrice,
             creator: msg.sender,
-            launchDate: block.timestamp,
-            participantCount: 0
+            participantCount: 0,
+            amountRaised: 0,
+            targetRaise: targetRaise,
+            hasCreatorWithdrawn: false
         });
 
         projects[projectId] = newProject;
-        projectIds.push(projectId);
-        creatorToProjectIds[msg.sender].push(projectId);
-        _projectCount++;
 
         emit TokenLaunched(
             address(newToken),
-            name,
             symbol,
             totalSupply,
             projectName,
@@ -227,7 +190,18 @@ contract TokenLauncher is ReentrancyGuard {
         return address(newToken);
     }
 
-    function buyTokens(uint256 projectId) public payable nonReentrant {
+    /**
+     * @notice Allows users to participate in a token launch by allocating tokens based on ETH sent
+     * @dev Tokens are allocated but not transferred immediately - they must be claimed after the sale ends
+     * @param projectId The ID of the token launch project
+     *
+     *
+     * State Changes:
+     * - Increases project.participantCount if this is the user's first allocation
+     * - Updates tokenAllocations mapping for the user
+     * - Increases project.amountRaised by msg.value
+     */
+    function allocateTokens(uint256 projectId) public payable {
         Project storage project = projects[projectId];
 
         if (project.tokenAddress == address(0)) {
@@ -238,101 +212,78 @@ contract TokenLauncher is ReentrancyGuard {
             revert SaleNotStarted();
         }
 
-        if (msg.value == 0) {
-            revert NoPayment();
+        if (block.timestamp > project.endDate) {
+            revert SaleEnded();
         }
 
-        if (!hasParticipated[projectId][msg.sender]) {
-            hasParticipated[projectId][msg.sender] = true;
-            projectBuyers[projectId].push(msg.sender);
+        uint256 tokenAmount = (msg.value * DECIMALS) / project.tokenPrice;
+
+        if (tokenAmount == 0) {
+            revert InvalidTokenAmount();
+        }
+
+        uint256 previousAllocation = tokenAllocations[projectId][msg.sender];
+
+        if (previousAllocation == 0) {
             project.participantCount++;
         }
 
-        uint256 tokenAmount = calculateTokenAmount(projectId, msg.value);
+        tokenAllocations[projectId][msg.sender] =
+            previousAllocation +
+            tokenAmount;
 
-        LaunchedToken token = LaunchedToken(project.tokenAddress);
+        project.amountRaised += msg.value;
 
-        if (
-            token.balanceOf(address(this)) <
-            tokenAmount * 10 ** token.decimals()
-        ) {
-            revert InsufficientLaunchpadTokens();
+        emit TokensAllocated(projectId, msg.sender, tokenAmount, msg.value);
+    }
+
+    function claimTokens(uint256 projectId) external {
+        Project storage project = projects[projectId];
+
+        if (block.timestamp <= project.endDate) {
+            revert SaleNotEnded();
         }
-        uint256 purchaseId = _generatePurchaseId();
 
-        Purchase memory purchase = Purchase({
-            amount: tokenAmount * 10 ** token.decimals(),
-            cost: msg.value,
-            purchaseDate: block.timestamp,
-            refunded: false
-        });
-
-        purchases[projectId][msg.sender].push(purchase);
-
-        bool success = token.transfer(
+        uint256 tokenAllocationAmount = tokenAllocations[projectId][msg.sender];
+        if (tokenAllocationAmount == 0) {
+            revert NoTokensToClaim();
+        }
+        tokenAllocations[projectId][msg.sender] = 0;
+        bool success = IERC20(project.tokenAddress).transfer(
             msg.sender,
-            tokenAmount * 10 ** token.decimals()
+            tokenAllocationAmount
         );
 
         if (!success) {
-            revert TransferFailed();
+            revert TokenClaimFailed();
         }
 
-        emit TokensPurchased(
-            projectId,
-            msg.sender,
-            tokenAmount,
-            msg.value,
-            purchaseId
-        );
+        emit TokensClaimed(projectId, msg.sender, tokenAllocationAmount);
     }
 
-    function refundTokens(
-        uint256 projectId
-    ) public nonReentrant isRefundable(projectId) {
+    function refundTokens(uint256 projectId) public isRefundable(projectId) {
         Project storage project = projects[projectId];
 
-        if (project.tokenAddress == address(0)) {
-            revert ProjectNotFound(projectId);
-        }
-
-        if (!hasParticipated[projectId][msg.sender]) {
+        uint256 tokenAllocationAmount = tokenAllocations[projectId][msg.sender];
+        if (tokenAllocationAmount == 0) {
             revert NoTokensToRefund();
         }
+        uint256 refundAmount = (tokenAllocationAmount * project.tokenPrice) /
+            DECIMALS;
 
-        LaunchedToken token = LaunchedToken(project.tokenAddress);
-        Purchase[] storage userPurchases = purchases[projectId][msg.sender];
-        uint256 totalRefundAmount = 0;
+        tokenAllocations[projectId][msg.sender] = 0;
+        project.amountRaised -= refundAmount;
 
-        for (uint256 i = 0; i < userPurchases.length; i++) {
-            Purchase storage purchase = userPurchases[i];
-            if (!purchase.refunded) {
-                uint256 tokensToReturn = purchase.amount;
+        (bool success, ) = msg.sender.call{value: refundAmount}("");
 
-                purchase.refunded = true;
-                totalRefundAmount += purchase.cost;
-
-                require(
-                    token.transferFrom(
-                        msg.sender,
-                        address(this),
-                        tokensToReturn
-                    ),
-                    "Token return failed"
-                );
-            }
+        if (!success) {
+            revert ETHRefundFailed();
         }
-        require(totalRefundAmount > 0, "No refunds available");
 
-        totalRaised[projectId] -= totalRefundAmount;
-
-        (bool success, ) = msg.sender.call{value: totalRefundAmount}("");
-        require(success, "ETH refund failed");
-
-        emit TokensRefunded(projectId, msg.sender, totalRefundAmount);
+        emit TokensRefunded(projectId, msg.sender, refundAmount);
     }
 
-    function withdrawFunds(uint256 projectId) public nonReentrant {
+    function withdrawFunds(uint256 projectId) public {
         Project storage project = projects[projectId];
 
         if (project.tokenAddress == address(0)) {
@@ -343,39 +294,41 @@ contract TokenLauncher is ReentrancyGuard {
             revert NotProjectCreator(msg.sender, project.creator);
         }
 
-        uint256 totalRaisedAmount = totalRaised[projectId];
-        uint256 targetAmount = getTargetRaise(projectId);
-
-        if (totalRaisedAmount < targetAmount) {
-            revert TargetRaiseNotMet(totalRaisedAmount, targetAmount);
+        if (project.hasCreatorWithdrawn) {
+            revert CreatorAlreadyWithdrew();
         }
 
-        if (totalRaisedAmount == 0) {
-            revert NoFundsToWithdraw();
+        if (project.amountRaised < project.targetRaise) {
+            revert TargetRaiseNotMet(project.amountRaised, project.targetRaise);
         }
 
-        uint256 creatorAmount = (totalRaisedAmount * 99) / 100;
+        uint256 creatorAmount = (project.amountRaised * CREATOR_FEE_NUMERATOR) /
+            LAUNCHPAD_FEE_DENOMINATOR;
 
-        (bool successCreator, ) = project.creator.call{value: creatorAmount}(
+        (bool withdrawSuccess, ) = project.creator.call{value: creatorAmount}(
             ""
         );
-        if (!successCreator) {
-            revert WithdrawalFailed(msg.sender, creatorAmount);
+        if (!withdrawSuccess) {
+            revert CreatorWithdrawalFailed(msg.sender, creatorAmount);
         }
+
+        project.hasCreatorWithdrawn = true;
 
         emit CreatorWithdraw(
             projectId,
             project.creator,
             creatorAmount,
-            totalRaisedAmount - creatorAmount
+            project.amountRaised - creatorAmount
         );
     }
 
     function getAllProjects() public view returns (Project[] memory) {
-        Project[] memory allProjects = new Project[](_projectCount);
+        Project[] memory allProjects = new Project[](_projectIds);
 
-        for (uint256 i = 0; i < projectIds.length; i++) {
-            allProjects[i] = projects[projectIds[i]];
+        for (uint256 i = 1; i <= _projectIds; i++) {
+            if (projects[i].tokenAddress != address(0)) {
+                allProjects[i - 1] = projects[i];
+            }
         }
         return allProjects;
     }
@@ -388,28 +341,28 @@ contract TokenLauncher is ReentrancyGuard {
             revert ProjectNotFound(projectId);
         }
 
+        Project storage project = projects[projectId];
         uint256 totalSpent = 0;
-        Purchase[] memory userPurchases = new Purchase[](0);
-        bool userHasParticipated = false;
+        uint256 tokenAllocationAmount = 0;
 
         if (user != address(0)) {
-            userHasParticipated = hasParticipated[projectId][user];
-            if (purchases[projectId][user].length > 0) {
-                userPurchases = purchases[projectId][user];
-                for (uint256 i = 0; i < userPurchases.length; i++) {
-                    if (!userPurchases[i].refunded) {
-                        totalSpent += userPurchases[i].cost;
-                    }
-                }
+            tokenAllocationAmount = tokenAllocations[projectId][user];
+            if (tokenAllocationAmount > 0) {
+                totalSpent =
+                    (tokenAllocationAmount * projects[projectId].tokenPrice) /
+                    DECIMALS;
             }
         }
+
+        uint256 availableTokens = project.totalSupply -
+            ((project.amountRaised * DECIMALS) / project.tokenPrice);
 
         return
             ProjectWithUserInfo({
                 project: projects[projectId],
                 totalSpent: totalSpent,
-                purchases: userPurchases,
-                hasParticipated: userHasParticipated
+                tokenAllocationAmount: tokenAllocationAmount,
+                availableTokens: availableTokens
             });
     }
 
@@ -417,36 +370,5 @@ contract TokenLauncher is ReentrancyGuard {
         uint256 projectId
     ) public view returns (ProjectWithUserInfo memory) {
         return getProjectWithUserInfo(projectId, address(0));
-    }
-
-    function getTargetRaise(uint256 projectId) public view returns (uint256) {
-        Project storage project = projects[projectId];
-        return project.totalSupply * project.tokenPrice;
-    }
-
-    function calculateTokenAmount(
-        uint256 projectId,
-        uint256 paymentAmount
-    ) public view returns (uint256 tokenAmount) {
-        Project storage project = projects[projectId];
-        return paymentAmount / project.tokenPrice;
-    }
-
-    function generateProjectId() private returns (uint256) {
-        _nonce++;
-        bytes32 hash = keccak256(
-            abi.encodePacked(block.timestamp, msg.sender, _nonce)
-        );
-
-        return uint256(uint96(bytes12(hash)));
-    }
-
-    function _generatePurchaseId() private returns (uint256) {
-        _purchaseNonce++;
-        bytes32 hash = keccak256(
-            abi.encodePacked(block.timestamp, msg.sender, _purchaseNonce)
-        );
-
-        return uint256(uint96(bytes12(hash)));
     }
 }
