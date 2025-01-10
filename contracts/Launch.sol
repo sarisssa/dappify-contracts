@@ -4,7 +4,6 @@ pragma solidity ^0.8.28;
 import "./LaunchedToken.sol";
 
 contract TokenLauncher {
-    uint256 private constant DECIMALS = 10 ** 18;
     uint256 private constant LAUNCHPAD_FEE_DENOMINATOR = 100;
     uint256 private constant CREATOR_FEE_NUMERATOR = 99;
     uint256 private constant MIN_DURATION = 30 days;
@@ -73,7 +72,6 @@ contract TokenLauncher {
     );
 
     error StartDateMustBeFuture();
-    error EndDateMustBeAfterStart();
     error MinimumDurationNotMet();
 
     error InvalidTotalSupply();
@@ -109,22 +107,31 @@ contract TokenLauncher {
         _;
     }
 
+    /**
+     * @notice Creates a new ERC-20 token and launches it on the platform
+     * @dev Deploys a new LaunchedToken contract and initializes a new project
+     * @param totalSupply The total supply of tokens to be created
+     * @param startDate The timestamp when the token sale starts
+     * @param endDate The timestamp when the token sale ends
+     * @param tokenPrice The price per token in wei
+     * @param name The name of the token
+     * @param symbol The symbol of the token
+     * @param projectName The name of the project
+     * @param projectDescription A description of the project
+     * @return address The address of the newly created token contract
+     */
     function launchToken(
-        string memory name,
-        string memory symbol,
         uint256 totalSupply,
-        string memory projectName,
-        string memory projectDescription,
         uint256 startDate,
         uint256 endDate,
-        uint256 tokenPrice
-    ) public returns (address) {
+        uint256 tokenPrice,
+        string memory name,
+        string memory symbol,
+        string memory projectName,
+        string memory projectDescription
+    ) external returns (address) {
         if (startDate < block.timestamp) {
             revert StartDateMustBeFuture();
-        }
-
-        if (endDate <= startDate) {
-            revert EndDateMustBeAfterStart();
         }
 
         if (endDate < startDate + MIN_DURATION) {
@@ -140,19 +147,19 @@ contract TokenLauncher {
         }
 
         LaunchedToken newToken = new LaunchedToken(
-            name,
-            symbol,
+            msg.sender,
+            address(this),
             totalSupply,
-            projectName,
-            projectDescription,
             startDate,
             endDate,
             tokenPrice,
-            msg.sender,
-            address(this)
+            name,
+            symbol,
+            projectName,
+            projectDescription
         );
 
-        uint256 targetRaise = (totalSupply * tokenPrice) / DECIMALS;
+        uint256 targetRaise = totalSupply * tokenPrice;
         uint256 projectId = ++_projectIds;
 
         Project memory newProject = Project({
@@ -201,7 +208,7 @@ contract TokenLauncher {
      * - Updates tokenAllocations mapping for the user
      * - Increases project.amountRaised by msg.value
      */
-    function allocateTokens(uint256 projectId) public payable {
+    function allocateTokens(uint256 projectId) external payable {
         Project storage project = projects[projectId];
 
         if (project.tokenAddress == address(0)) {
@@ -216,7 +223,7 @@ contract TokenLauncher {
             revert SaleEnded();
         }
 
-        uint256 tokenAmount = (msg.value * DECIMALS) / project.tokenPrice;
+        uint256 tokenAmount = (msg.value) / project.tokenPrice;
 
         if (tokenAmount == 0) {
             revert InvalidTokenAmount();
@@ -237,11 +244,24 @@ contract TokenLauncher {
         emit TokensAllocated(projectId, msg.sender, tokenAmount, msg.value);
     }
 
+    /**
+     * @notice Allows users to claim their allocated tokens after a successful raise
+     * @dev Transfer tokens from the contract to the claimer
+     * @param projectId The ID of the token launch project
+     *
+     * State Changes:
+     * - Sets tokenAllocations[projectId][msg.sender] to 0
+     * - Transfers tokens from contract to msg.sender
+     */
     function claimTokens(uint256 projectId) external {
         Project storage project = projects[projectId];
 
         if (block.timestamp <= project.endDate) {
             revert SaleNotEnded();
+        }
+
+        if (project.amountRaised < project.targetRaise) {
+            revert TargetRaiseNotMet(project.amountRaised, project.targetRaise);
         }
 
         uint256 tokenAllocationAmount = tokenAllocations[projectId][msg.sender];
@@ -261,15 +281,24 @@ contract TokenLauncher {
         emit TokensClaimed(projectId, msg.sender, tokenAllocationAmount);
     }
 
-    function refundTokens(uint256 projectId) public isRefundable(projectId) {
+    /**
+     * @notice Allows users to get a refund if the sale is unsuccessful
+     * @dev Users can get refunds if minimum duration has passed and target wasn't met
+     * @param projectId The ID of the token launch project
+     *
+     * State Changes:
+     * - Sets tokenAllocations[projectId][msg.sender] to 0
+     * - Decreases project.amountRaised by refund amount
+     * - Transfers ETH from contract to msg.sender
+     */
+    function refundTokens(uint256 projectId) external isRefundable(projectId) {
         Project storage project = projects[projectId];
 
         uint256 tokenAllocationAmount = tokenAllocations[projectId][msg.sender];
         if (tokenAllocationAmount == 0) {
             revert NoTokensToRefund();
         }
-        uint256 refundAmount = (tokenAllocationAmount * project.tokenPrice) /
-            DECIMALS;
+        uint256 refundAmount = tokenAllocationAmount * project.tokenPrice;
 
         tokenAllocations[projectId][msg.sender] = 0;
         project.amountRaised -= refundAmount;
@@ -283,7 +312,16 @@ contract TokenLauncher {
         emit TokensRefunded(projectId, msg.sender, refundAmount);
     }
 
-    function withdrawFunds(uint256 projectId) public {
+    /**
+     * @notice Allows the project creator to withdraw raised funds
+     * @dev Creator can only withdraw if target is met and they haven't withdrawn before
+     * @param projectId The ID of the token launch project
+     *
+     * State Changes:
+     * - Sets project.hasCreatorWithdrawn to true
+     * - Transfers ETH from contract to project creator
+     */
+    function withdrawFunds(uint256 projectId) external {
         Project storage project = projects[projectId];
 
         if (project.tokenAddress == address(0)) {
@@ -322,7 +360,12 @@ contract TokenLauncher {
         );
     }
 
-    function getAllProjects() public view returns (Project[] memory) {
+    /**
+     * @notice Retrieves all projects that have been created
+     * @dev Returns an array of all projects, including completed and ongoing ones
+     * @return Project[] An array of all projects
+     */
+    function getAllProjects() external view returns (Project[] memory) {
         Project[] memory allProjects = new Project[](_projectIds);
 
         for (uint256 i = 1; i <= _projectIds; i++) {
@@ -333,6 +376,13 @@ contract TokenLauncher {
         return allProjects;
     }
 
+    /**
+     * @notice Gets detailed project information including user-specific data
+     * @dev Returns project details along with user allocation and spending info
+     * @param projectId The ID of the project to query
+     * @param user The address of the user to query information for
+     * @return ProjectWithUserInfo Struct containing project and user-specific information
+     */
     function getProjectWithUserInfo(
         uint256 projectId,
         address user
@@ -349,13 +399,13 @@ contract TokenLauncher {
             tokenAllocationAmount = tokenAllocations[projectId][user];
             if (tokenAllocationAmount > 0) {
                 totalSpent =
-                    (tokenAllocationAmount * projects[projectId].tokenPrice) /
-                    DECIMALS;
+                    tokenAllocationAmount *
+                    projects[projectId].tokenPrice;
             }
         }
 
         uint256 availableTokens = project.totalSupply -
-            ((project.amountRaised * DECIMALS) / project.tokenPrice);
+            (project.amountRaised / project.tokenPrice);
 
         return
             ProjectWithUserInfo({
@@ -366,9 +416,16 @@ contract TokenLauncher {
             });
     }
 
+    /**
+     * @notice Gets project details without user-specific information
+     * @dev Wrapper around getProjectWithUserInfo with zero address as user
+     * @dev Typically used for anonymous users on the frontend who haven't connected their wallet
+     * @param projectId The ID of the project to query
+     * @return ProjectWithUserInfo Struct containing project information
+     */
     function getProjectDetails(
         uint256 projectId
-    ) public view returns (ProjectWithUserInfo memory) {
+    ) external view returns (ProjectWithUserInfo memory) {
         return getProjectWithUserInfo(projectId, address(0));
     }
 }
