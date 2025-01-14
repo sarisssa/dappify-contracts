@@ -3,11 +3,16 @@ pragma solidity ^0.8.28;
 
 import "./LaunchedToken.sol";
 
+/// @title TokenLauncher - A contract for launching new ERC20 tokens
+/// @notice This contract allows users to create and launch new ERC20 tokens with customizable parameters
+/// @dev Handles token creation, sales, refunds, and creator withdrawals
 contract TokenLauncher {
     uint256 private constant LAUNCHPAD_FEE_DENOMINATOR = 100;
     uint256 private constant CREATOR_FEE_NUMERATOR = 99;
     uint256 private constant MIN_DURATION = 30 days;
 
+    /// @notice Structure to hold project information
+    /// @dev Used to track all details about a launched token project
     struct Project {
         uint256 projectId;
         uint256 totalSupply;
@@ -25,6 +30,8 @@ contract TokenLauncher {
         bool hasCreatorWithdrawn;
     }
 
+    /// @notice Structure to hold project information with user-specific details
+    /// @dev Combines project data with user allocation information
     struct ProjectWithUserInfo {
         Project project;
         uint256 totalSpent;
@@ -33,7 +40,9 @@ contract TokenLauncher {
     }
 
     uint256 private _projectIds;
+    /// @notice Mapping from project ID to Project details
     mapping(uint256 => Project) public projects;
+    /// @notice Mapping from project ID to user address to token allocation amount
     mapping(uint256 => mapping(address => uint256)) public tokenAllocations;
 
     event TokenLaunched(
@@ -71,6 +80,7 @@ contract TokenLauncher {
         uint256 launchpadFee
     );
 
+    error InvalidStringParameters(string message);
     error StartDateMustBeFuture();
     error MinimumDurationNotMet();
 
@@ -80,6 +90,7 @@ contract TokenLauncher {
 
     error SaleNotStarted();
     error SaleNotEnded();
+    error InsufficientTokens(uint256 available, uint256 requested);
     error NoTokensToClaim();
     error TokenClaimFailed();
 
@@ -96,6 +107,8 @@ contract TokenLauncher {
     error TargetRaiseNotMet(uint256 current, uint256 target);
     error CreatorWithdrawalFailed(address creator, uint256 amount);
 
+    /// @notice Modifier to check if a project is eligible for refunds
+    /// @param projectId The ID of the project to check
     modifier isRefundable(uint256 projectId) {
         Project storage project = projects[projectId];
         if (block.timestamp < project.startDate + MIN_DURATION) {
@@ -130,6 +143,14 @@ contract TokenLauncher {
         string memory projectName,
         string memory projectDescription
     ) external returns (address) {
+        if (
+            bytes(name).length == 0 ||
+            bytes(symbol).length == 0 ||
+            bytes(projectName).length == 0 ||
+            bytes(projectDescription).length == 0
+        ) {
+            revert InvalidStringParameters("String parameters cannot be empty");
+        }
         if (startDate < block.timestamp) {
             revert StartDateMustBeFuture();
         }
@@ -138,11 +159,11 @@ contract TokenLauncher {
             revert MinimumDurationNotMet();
         }
 
-        if (totalSupply == 0) {
+        if (totalSupply <= 0) {
             revert InvalidTotalSupply();
         }
 
-        if (tokenPrice == 0) {
+        if (tokenPrice <= 0) {
             revert InvalidTokenPrice();
         }
 
@@ -222,11 +243,17 @@ contract TokenLauncher {
         if (block.timestamp > project.endDate) {
             revert SaleEnded();
         }
-
         uint256 tokenAmount = (msg.value) / project.tokenPrice;
 
         if (tokenAmount == 0) {
             revert InvalidTokenAmount();
+        }
+
+        uint256 tokensAllocated = project.amountRaised / project.tokenPrice;
+        uint256 availableTokens = project.totalSupply - tokensAllocated;
+
+        if (tokenAmount > availableTokens) {
+            revert InsufficientTokens(availableTokens, tokenAmount);
         }
 
         uint256 previousAllocation = tokenAllocations[projectId][msg.sender];
@@ -360,11 +387,9 @@ contract TokenLauncher {
         );
     }
 
-    /**
-     * @notice Retrieves all projects that have been created
-     * @dev Returns an array of all projects, including completed and ongoing ones
-     * @return Project[] An array of all projects
-     */
+    /// @notice Retrieves all projects that have been created
+    /// @dev Returns an array of all projects, including completed and ongoing ones
+    /// @return Project[] An array of all projects
     function getAllProjects() external view returns (Project[] memory) {
         Project[] memory allProjects = new Project[](_projectIds);
 
@@ -376,13 +401,11 @@ contract TokenLauncher {
         return allProjects;
     }
 
-    /**
-     * @notice Gets detailed project information including user-specific data
-     * @dev Returns project details along with user allocation and spending info
-     * @param projectId The ID of the project to query
-     * @param user The address of the user to query information for
-     * @return ProjectWithUserInfo Struct containing project and user-specific information
-     */
+    /// @notice Gets detailed project information including user-specific data
+    /// @dev Returns project details along with user allocation and spending info
+    /// @param projectId The ID of the project to query
+    /// @param user The address of the user to query information for
+    /// @return ProjectWithUserInfo Struct containing project and user-specific information
     function getProjectWithUserInfo(
         uint256 projectId,
         address user
@@ -416,13 +439,10 @@ contract TokenLauncher {
             });
     }
 
-    /**
-     * @notice Gets project details without user-specific information
-     * @dev Wrapper around getProjectWithUserInfo with zero address as user
-     * @dev Typically used for anonymous users on the frontend who haven't connected their wallet
-     * @param projectId The ID of the project to query
-     * @return ProjectWithUserInfo Struct containing project information
-     */
+    /// @notice Gets project details without user-specific information
+    /// @dev Wrapper around getProjectWithUserInfo with zero address as user
+    /// @param projectId The ID of the project to query
+    /// @return ProjectWithUserInfo Struct containing project information
     function getProjectDetails(
         uint256 projectId
     ) external view returns (ProjectWithUserInfo memory) {
