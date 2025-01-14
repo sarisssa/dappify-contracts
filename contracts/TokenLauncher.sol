@@ -283,6 +283,10 @@ contract TokenLauncher {
     function claimTokens(uint256 projectId) external {
         Project storage project = projects[projectId];
 
+        if (project.tokenAddress == address(0)) {
+            revert ProjectNotFound(projectId);
+        }
+
         if (block.timestamp <= project.endDate) {
             revert SaleNotEnded();
         }
