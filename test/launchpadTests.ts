@@ -1,20 +1,116 @@
-import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
-import { time } from "@nomicfoundation/hardhat-toolbox/network-helpers";
+import {
+  loadFixture,
+  time,
+} from "@nomicfoundation/hardhat-toolbox/network-helpers";
 import { expect } from "chai";
 import { ethers } from "hardhat";
 
 describe("TokenLauncher", function () {
-  let tokenLauncher: any;
-  let owner: SignerWithAddress;
-
-  beforeEach(async function () {
-    [owner] = await ethers.getSigners();
+  async function deployTokenLauncherFixture() {
+    const [owner, user1, user2] = await ethers.getSigners();
     const TokenLauncher = await ethers.getContractFactory("TokenLauncher");
-    tokenLauncher = await TokenLauncher.deploy();
+    const tokenLauncher = await TokenLauncher.deploy();
     await tokenLauncher.waitForDeployment();
-  });
+
+    return { tokenLauncher, owner, user1, user2 };
+  }
+
+  async function launchedTokenFixture() {
+    const { tokenLauncher, owner, user1, user2 } =
+      await deployTokenLauncherFixture();
+
+    const totalSupply = 1000000;
+    const startDate = (await time.latest()) + 3600;
+    const endDate = startDate + 30 * 24 * 60 * 60;
+    const tokenPrice = ethers.parseEther("0.01");
+    const name = "Test Token";
+    const symbol = "TTK";
+    const projectName = "Test Token Project";
+    const projectDescription = "A test token project";
+
+    await tokenLauncher.launchToken(
+      totalSupply,
+      startDate,
+      endDate,
+      tokenPrice,
+      name,
+      symbol,
+      projectName,
+      projectDescription
+    );
+
+    const projects = await tokenLauncher.getAllProjects();
+    const projectId = projects[projects.length - 1].projectId;
+    const tokenAddress = projects[projects.length - 1].tokenAddress;
+
+    return {
+      tokenLauncher,
+      owner,
+      user1,
+      user2,
+      projectId,
+      tokenAddress,
+      totalSupply,
+      startDate,
+      endDate,
+      tokenPrice,
+      name,
+      symbol,
+      projectName,
+      projectDescription,
+    };
+  }
+  async function smallSupplyTokenFixture() {
+    const { tokenLauncher, owner, user1, user2 } =
+      await deployTokenLauncherFixture();
+
+    const totalSupply = 1000;
+    const startDate = (await time.latest()) + 3600;
+    const endDate = startDate + 30 * 24 * 60 * 60;
+    const tokenPrice = ethers.parseEther("0.01");
+    const name = "Small Token";
+    const symbol = "STK";
+    const projectName = "Small Project";
+    const projectDescription = "A test project with small supply";
+
+    await tokenLauncher.launchToken(
+      totalSupply,
+      startDate,
+      endDate,
+      tokenPrice,
+      name,
+      symbol,
+      projectName,
+      projectDescription
+    );
+
+    const projects = await tokenLauncher.getAllProjects();
+    const projectId = projects[projects.length - 1].projectId;
+    const tokenAddress = projects[projects.length - 1].tokenAddress;
+
+    return {
+      tokenLauncher,
+      owner,
+      user1,
+      user2,
+      projectId,
+      tokenAddress,
+      totalSupply,
+      startDate,
+      endDate,
+      tokenPrice,
+      name,
+      symbol,
+      projectName,
+      projectDescription,
+    };
+  }
 
   it("Should emit the TokenLaunched event with the correct parameters upon successful token launch", async function () {
+    const { tokenLauncher, owner } = await loadFixture(
+      deployTokenLauncherFixture
+    );
+
     const totalSupply = 1000000;
     const startDate = (await time.latest()) + 3600;
     const endDate = startDate + 30 * 24 * 60 * 60;
@@ -52,16 +148,10 @@ describe("TokenLauncher", function () {
   });
 
   it("Should initialize launched token with the correct parameters", async function () {
-    const totalSupply = 1000000;
-    const startDate = (await time.latest()) + 3600;
-    const endDate = startDate + 30 * 24 * 60 * 60;
-    const tokenPrice = ethers.parseEther("0.01");
-    const name = "Test Token";
-    const symbol = "TTK";
-    const projectName = "Test Token Project";
-    const projectDescription = "A test token project";
-
-    await tokenLauncher.launchToken(
+    const {
+      tokenLauncher,
+      owner,
+      tokenAddress,
       totalSupply,
       startDate,
       endDate,
@@ -69,20 +159,12 @@ describe("TokenLauncher", function () {
       name,
       symbol,
       projectName,
-      projectDescription
-    );
+      projectDescription,
+    } = await loadFixture(launchedTokenFixture);
 
-    const projects = await tokenLauncher.getAllProjects();
-    const latestProject = projects[projects.length - 1];
-
-    const token = await ethers.getContractAt(
-      "LaunchedToken",
-      latestProject.tokenAddress
-    );
-
+    const token = await ethers.getContractAt("LaunchedToken", tokenAddress);
     const launchpadBalance = await token.balanceOf(tokenLauncher.getAddress());
     expect(launchpadBalance).to.equal(totalSupply);
-
     expect(await token.startDate()).to.equal(startDate);
     expect(await token.endDate()).to.equal(endDate);
     expect(await token.tokenPrice()).to.equal(tokenPrice);
@@ -95,30 +177,23 @@ describe("TokenLauncher", function () {
   });
 
   it("Should store the project with the correct parameters after launching the token", async function () {
-    const totalSupply = 1000000;
-    const startDate = (await time.latest()) + 3600;
-    const endDate = startDate + 30 * 24 * 60 * 60;
-    const tokenPrice = ethers.parseEther("0.01");
-    const name = "Test Token";
-    const symbol = "TTK";
-    const projectName = "Test Token Project";
-    const projectDescription = "A test token project";
-
-    await tokenLauncher.launchToken(
+    const {
+      tokenLauncher,
+      owner,
+      projectId,
+      tokenAddress,
       totalSupply,
       startDate,
       endDate,
       tokenPrice,
-      name,
-      symbol,
       projectName,
-      projectDescription
-    );
+      projectDescription,
+    } = await loadFixture(launchedTokenFixture);
 
     const projects = await tokenLauncher.getAllProjects();
     const latestProject = projects[projects.length - 1];
 
-    expect(latestProject.tokenAddress).to.not.equal(ethers.ZeroAddress);
+    expect(latestProject.tokenAddress).to.equal(tokenAddress);
     expect(latestProject.startDate).to.equal(startDate);
     expect(latestProject.endDate).to.equal(endDate);
     expect(latestProject.tokenPrice).to.equal(tokenPrice);
@@ -129,14 +204,12 @@ describe("TokenLauncher", function () {
   });
 
   it("Should revert when attempting to launch a token with empty string parameters", async function () {
+    const { tokenLauncher } = await loadFixture(deployTokenLauncherFixture);
+
     const totalSupply = 1000000;
     const startDate = (await time.latest()) + 3600;
     const endDate = startDate + 30 * 24 * 60 * 60;
     const tokenPrice = ethers.parseEther("0.01");
-    const name = "";
-    const symbol = "";
-    const projectName = "";
-    const projectDescription = "";
 
     await expect(
       tokenLauncher.launchToken(
@@ -144,233 +217,157 @@ describe("TokenLauncher", function () {
         startDate,
         endDate,
         tokenPrice,
-        name,
-        symbol,
-        projectName,
-        projectDescription
+        "",
+        "",
+        "",
+        ""
       )
     ).to.be.revertedWithCustomError(tokenLauncher, "InvalidStringParameters");
   });
 
   it("Should revert when attempting to launch a token with a start date in the past", async function () {
-    const totalSupply = 1000000;
-    const startDate = (await time.latest()) - 3600;
-    const endDate = startDate + 30 * 24 * 60 * 60;
-    const tokenPrice = ethers.parseEther("0.01");
-    const name = "Test Token";
-    const symbol = "TTK";
-    const projectName = "Test Token Project";
-    const projectDescription = "A test token project";
+    const { tokenLauncher, totalSupply, endDate, tokenPrice } =
+      await loadFixture(launchedTokenFixture);
+
+    const pastStartDate = (await time.latest()) - 3600;
 
     await expect(
       tokenLauncher.launchToken(
         totalSupply,
-        startDate,
+        pastStartDate,
         endDate,
         tokenPrice,
-        name,
-        symbol,
-        projectName,
-        projectDescription
+        "Test Token",
+        "TTK",
+        "Test Token Project",
+        "A test token project"
       )
     ).to.be.revertedWithCustomError(tokenLauncher, "StartDateMustBeFuture");
   });
-
   it("Should revert when attempting to launch a token with an end date before the start date", async function () {
-    const totalSupply = 1000000;
-    const startDate = (await time.latest()) + 3600;
-    const endDate = startDate - 1;
-    const tokenPrice = ethers.parseEther("0.01");
-    const name = "Test Token";
-    const symbol = "TTK";
-    const projectName = "Test Token Project";
-    const projectDescription = "A test token project";
+    const { tokenLauncher, totalSupply, startDate, tokenPrice } =
+      await loadFixture(launchedTokenFixture);
+
+    const invalidEndDate = startDate - 1;
 
     await expect(
       tokenLauncher.launchToken(
         totalSupply,
         startDate,
-        endDate,
+        invalidEndDate,
         tokenPrice,
-        name,
-        symbol,
-        projectName,
-        projectDescription
+        "Test Token",
+        "TTK",
+        "Test Token Project",
+        "A test token project"
       )
     ).to.be.revertedWithCustomError(tokenLauncher, "MinimumDurationNotMet");
   });
 
   it("Should revert when attempting to launch a token with a duration shorter than the minimum required", async function () {
-    const totalSupply = 1000000;
-    const startDate = (await time.latest()) + 3600;
-    const endDate = startDate + 1 * 24 * 60 * 60;
-    const tokenPrice = ethers.parseEther("0.01");
-    const name = "Test Token";
-    const symbol = "TTK";
-    const projectName = "Test Token Project";
-    const projectDescription = "A test token project";
+    const { tokenLauncher, totalSupply, startDate, tokenPrice } =
+      await loadFixture(launchedTokenFixture);
+
+    const shortEndDate = startDate + 1 * 24 * 60 * 60; // Only 1 day duration
 
     await expect(
       tokenLauncher.launchToken(
         totalSupply,
         startDate,
-        endDate,
+        shortEndDate,
         tokenPrice,
-        name,
-        symbol,
-        projectName,
-        projectDescription
+        "Test Token",
+        "TTK",
+        "Test Token Project",
+        "A test token project"
       )
     ).to.be.revertedWithCustomError(tokenLauncher, "MinimumDurationNotMet");
   });
-
   it("Should revert when attempting to launch a token with a total supply of zero", async function () {
-    const totalSupply = 0;
-    const startDate = (await time.latest()) + 3600;
-    const endDate = startDate + 30 * 24 * 60 * 60;
-    const tokenPrice = ethers.parseEther("0.01");
-    const name = "Test Token";
-    const symbol = "TTK";
-    const projectName = "Test Token Project";
-    const projectDescription = "A test token project";
+    const { tokenLauncher, startDate, endDate, tokenPrice } = await loadFixture(
+      launchedTokenFixture
+    );
 
     await expect(
       tokenLauncher.launchToken(
-        totalSupply,
-        startDate,
-        endDate,
-        tokenPrice,
-        name,
-        symbol,
-        projectName,
-        projectDescription
-      )
-    ).to.be.revertedWithCustomError(tokenLauncher, "InvalidTotalSupply");
-  });
-
-  it("Should revert when attempting to launch a token with a token price of zero", async function () {
-    const totalSupply = 1000000;
-    const startDate = (await time.latest()) + 3600;
-    const endDate = startDate + 30 * 24 * 60 * 60;
-    const tokenPrice = 0;
-    const name = "Test Token";
-    const symbol = "TTK";
-    const projectName = "Test Token Project";
-    const projectDescription = "A test token project";
-
-    await expect(
-      tokenLauncher.launchToken(
-        totalSupply,
-        startDate,
-        endDate,
-        tokenPrice,
-        name,
-        symbol,
-        projectName,
-        projectDescription
-      )
-    ).to.be.revertedWithCustomError(tokenLauncher, "InvalidTokenPrice");
-  });
-
-  it("Should increment project IDs correctly for multiple launches", async function () {
-    const baseParams = {
-      totalSupply: 1000000,
-      startDate: (await time.latest()) + 3600,
-      endDate: (await time.latest()) + 3600 + 30 * 24 * 60 * 60,
-      tokenPrice: ethers.parseEther("0.01"),
-      name: "Test Token",
-      symbol: "TTK",
-      projectName: "Test Token Project",
-      projectDescription: "A test token project",
-    };
-
-    await tokenLauncher.launchToken(
-      baseParams.totalSupply,
-      baseParams.startDate,
-      baseParams.endDate,
-      baseParams.tokenPrice,
-      baseParams.name,
-      baseParams.symbol + "1",
-      baseParams.projectName,
-      baseParams.projectDescription
-    );
-
-    await tokenLauncher.launchToken(
-      baseParams.totalSupply,
-      baseParams.startDate,
-      baseParams.endDate,
-      baseParams.tokenPrice,
-      baseParams.name,
-      baseParams.symbol + "2",
-      baseParams.projectName,
-      baseParams.projectDescription
-    );
-
-    const projects = await tokenLauncher.getAllProjects();
-    expect(projects.length).to.equal(2);
-    expect(projects[0].projectId).to.equal(1);
-    expect(projects[1].projectId).to.equal(2);
-  });
-
-  describe("Token Allocation", function () {
-    let tokenLauncher: any;
-    let owner: SignerWithAddress;
-    let user1: SignerWithAddress;
-    let projectId: number;
-    let tokenPrice: bigint;
-    let totalSupply: number;
-
-    beforeEach(async function () {
-      [owner, user1] = await ethers.getSigners();
-      const TokenLauncher = await ethers.getContractFactory("TokenLauncher");
-      tokenLauncher = await TokenLauncher.deploy();
-      await tokenLauncher.waitForDeployment();
-
-      totalSupply = 1000000;
-      const startDate = (await time.latest()) + 3600;
-      const endDate = startDate + 30 * 24 * 60 * 60;
-      tokenPrice = ethers.parseEther("0.01");
-
-      await tokenLauncher.launchToken(
-        totalSupply,
+        0,
         startDate,
         endDate,
         tokenPrice,
         "Test Token",
         "TTK",
-        "Test Project",
-        "A test project"
-      );
+        "Test Token Project",
+        "A test token project"
+      )
+    ).to.be.revertedWithCustomError(tokenLauncher, "InvalidTotalSupply");
+  });
 
-      const projects = await tokenLauncher.getAllProjects();
-      projectId = projects[projects.length - 1].projectId;
+  it("Should revert when attempting to launch a token with a token price of zero", async function () {
+    const { tokenLauncher, totalSupply, startDate, endDate } =
+      await loadFixture(launchedTokenFixture);
 
-      await time.increaseTo(startDate + 1);
-    });
-
-    it("Should successfully allocate tokens when sending correct ETH amount", async function () {
-      const totalSupply = 1000000;
-      const startDate = (await time.latest()) + 3600;
-      const endDate = startDate + 30 * 24 * 60 * 60;
-      const tokenPrice = ethers.parseEther("0.01");
-      const name = "Test Token";
-      const symbol = "TTK";
-      const projectName = "Test Token Project";
-      const projectDescription = "A test token project";
-
-      await tokenLauncher.launchToken(
+    await expect(
+      tokenLauncher.launchToken(
         totalSupply,
         startDate,
         endDate,
-        tokenPrice,
-        name,
-        symbol,
-        projectName,
-        projectDescription
-      );
+        0,
+        "Test Token",
+        "TTK",
+        "Test Token Project",
+        "A test token project"
+      )
+    ).to.be.revertedWithCustomError(tokenLauncher, "InvalidTokenPrice");
+  });
 
-      const projects = await tokenLauncher.getAllProjects();
-      const projectId = projects[0].projectId;
+  it("Should increment project IDs correctly for multiple launches", async function () {
+    const {
+      tokenLauncher,
+      totalSupply,
+      startDate,
+      endDate,
+      tokenPrice,
+      name,
+      symbol,
+      projectName,
+      projectDescription,
+    } = await loadFixture(launchedTokenFixture);
+
+    await tokenLauncher.launchToken(
+      totalSupply,
+      startDate,
+      endDate,
+      tokenPrice,
+      name,
+      symbol + "1",
+      projectName,
+      projectDescription
+    );
+
+    await tokenLauncher.launchToken(
+      totalSupply,
+      startDate,
+      endDate,
+      tokenPrice,
+      name,
+      symbol + "2",
+      projectName,
+      projectDescription
+    );
+
+    const projects = await tokenLauncher.getAllProjects();
+    expect(projects.length).to.equal(3); // Original + 2 new launches
+    expect(projects[0].projectId).to.equal(1);
+    expect(projects[1].projectId).to.equal(2);
+    expect(projects[2].projectId).to.equal(3);
+  });
+
+  describe("Token Allocation", function () {
+    it("Should successfully allocate tokens when sending correct ETH amount", async function () {
+      const { tokenLauncher, user1, projectId, startDate, tokenPrice } =
+        await loadFixture(launchedTokenFixture);
+
+      await time.increaseTo(startDate + 1);
 
       const ethAmount = ethers.parseEther("1");
       const expectedTokenAmount = ethAmount / tokenPrice;
@@ -391,6 +388,11 @@ describe("TokenLauncher", function () {
     });
 
     it("Should update project metadata after multiple allocations", async function () {
+      const { tokenLauncher, user1, projectId, startDate, tokenPrice } =
+        await loadFixture(launchedTokenFixture);
+
+      await time.increaseTo(startDate + 1);
+
       const ethAmount = ethers.parseEther("1");
       const expectedTokenAmount = ethAmount / tokenPrice;
 
@@ -421,39 +423,25 @@ describe("TokenLauncher", function () {
     });
 
     it("Should revert when attempting to allocate tokens before sale starts", async function () {
-      const startDate = (await time.latest()) + 3600;
-      const endDate = startDate + 30 * 24 * 60 * 60;
-
-      await tokenLauncher.launchToken(
-        totalSupply,
-        startDate,
-        endDate,
-        tokenPrice,
-        "Future Token",
-        "FTK",
-        "Future Project",
-        "A future project"
+      const { tokenLauncher, user1, projectId } = await loadFixture(
+        launchedTokenFixture
       );
-
-      const projects = await tokenLauncher.getAllProjects();
-      const futureProjectId = projects[projects.length - 1].projectId;
 
       const ethAmount = ethers.parseEther("1");
 
       await expect(
-        tokenLauncher.connect(user1).allocateTokens(futureProjectId, {
+        tokenLauncher.connect(user1).allocateTokens(projectId, {
           value: ethAmount,
         })
       ).to.be.revertedWithCustomError(tokenLauncher, "SaleNotStarted");
     });
 
     it("Should revert when attempting to allocate tokens after sale ends", async function () {
-      const projectInfo = await tokenLauncher.getProjectWithUserInfo(
-        projectId,
-        user1.address
+      const { tokenLauncher, user1, projectId, endDate } = await loadFixture(
+        launchedTokenFixture
       );
-      await time.increaseTo(projectInfo.project.endDate + BigInt(1));
 
+      await time.increaseTo(endDate + 1);
       const ethAmount = ethers.parseEther("1");
 
       await expect(
@@ -464,7 +452,25 @@ describe("TokenLauncher", function () {
     });
 
     it("Should revert when attempting to allocate tokens with zero ETH", async function () {
-      await time.increaseTo((await time.latest()) + 3600 + 1);
+      const { tokenLauncher, user1, projectId, startDate } = await loadFixture(
+        launchedTokenFixture
+      );
+
+      await time.increaseTo(startDate + 1);
+
+      await expect(
+        tokenLauncher.connect(user1).allocateTokens(projectId, {
+          value: 0,
+        })
+      ).to.be.revertedWithCustomError(tokenLauncher, "InvalidTokenAmount");
+    });
+
+    it("Should revert when attempting to allocate tokens with zero ETH", async function () {
+      const { tokenLauncher, user1, projectId, startDate } = await loadFixture(
+        launchedTokenFixture
+      );
+
+      await time.increaseTo(startDate + 1);
 
       await expect(
         tokenLauncher.connect(user1).allocateTokens(projectId, {
@@ -474,7 +480,11 @@ describe("TokenLauncher", function () {
     });
 
     it("Should revert when attempting to allocate tokens for non-existent project", async function () {
-      await time.increaseTo((await time.latest()) + 3600 + 1); // Move past start time
+      const { tokenLauncher, user1, startDate } = await loadFixture(
+        launchedTokenFixture
+      );
+
+      await time.increaseTo(startDate + 1);
       const nonExistentProjectId = 999;
       const ethAmount = ethers.parseEther("1");
 
@@ -486,40 +496,26 @@ describe("TokenLauncher", function () {
     });
 
     it("Should revert when attempting to allocate more tokens than available", async function () {
-      const smallTotalSupply = 1000;
-      const currentTime = await time.latest();
-      const startDate = currentTime + 3600;
-      const endDate = startDate + 30 * 24 * 60 * 60;
-
-      await tokenLauncher.launchToken(
-        smallTotalSupply,
-        startDate,
-        endDate,
-        tokenPrice,
-        "Small Token",
-        "STK",
-        "Small Project",
-        "A test project with small supply"
+      const { tokenLauncher, user1, startDate, tokenPrice } = await loadFixture(
+        smallSupplyTokenFixture
       );
-
-      const projects = await tokenLauncher.getAllProjects();
-      const smallProjectId = projects[projects.length - 1].projectId;
 
       await time.increaseTo(startDate + 1);
 
+      // First allocation
       const initialAllocation = 900;
       const initialEthAmount = BigInt(initialAllocation) * tokenPrice;
-
-      await tokenLauncher.connect(user1).allocateTokens(smallProjectId, {
+      await tokenLauncher.connect(user1).allocateTokens(1, {
         value: initialEthAmount,
       });
 
+      // Try to allocate more than remaining
       const remainingTokens = 100;
       const excessAmount = 150;
       const ethAmount = BigInt(excessAmount) * tokenPrice;
 
       await expect(
-        tokenLauncher.connect(user1).allocateTokens(smallProjectId, {
+        tokenLauncher.connect(user1).allocateTokens(1, {
           value: ethAmount,
         })
       )
@@ -528,13 +524,16 @@ describe("TokenLauncher", function () {
     });
 
     it("Should maintain correct state after failed allocation attempt", async function () {
-      await time.increaseTo((await time.latest()) + 3600 + 1); // Move past start time
+      const { tokenLauncher, user1, projectId, startDate } = await loadFixture(
+        launchedTokenFixture
+      );
+
+      await time.increaseTo(startDate + 1);
 
       const beforeProjectInfo = await tokenLauncher.getProjectWithUserInfo(
         projectId,
         user1.address
       );
-      4;
       const beforeAllocation = await tokenLauncher.tokenAllocations(
         projectId,
         user1.address
@@ -566,201 +565,211 @@ describe("TokenLauncher", function () {
   });
 
   describe("Token Claim", function () {
-    let claimTokenLauncher: any;
-    let claimUser: SignerWithAddress;
-    let claimProjectId: number;
-    let claimTokenPrice: bigint;
-    let claimTotalSupply: number;
-    let claimTokenAddress: string;
-    let claimStartDate: number;
-    let claimEndDate: number;
-
-    beforeEach(async function () {
-      [claimUser] = await ethers.getSigners();
-      const TokenLauncher = await ethers.getContractFactory("TokenLauncher");
-      claimTokenLauncher = await TokenLauncher.deploy();
-      await claimTokenLauncher.waitForDeployment();
-
-      claimTotalSupply = 1000;
-      claimStartDate = (await time.latest()) + 3600;
-      claimEndDate = claimStartDate + 30 * 24 * 60 * 60;
-      claimTokenPrice = ethers.parseEther("0.0001");
-
-      await claimTokenLauncher.launchToken(
-        claimTotalSupply,
-        claimStartDate,
-        claimEndDate,
-        claimTokenPrice,
-        "Test Token",
-        "TTK",
-        "Test Project",
-        "A test project"
-      );
-
-      const projects = await claimTokenLauncher.getAllProjects();
-      claimProjectId = projects[projects.length - 1].projectId;
-      claimTokenAddress = projects[projects.length - 1].tokenAddress;
-    });
-
     it("Should allow user to claim allocated tokens after sale ends", async function () {
-      await time.increaseTo(claimStartDate + 1);
-      const targetRaise = BigInt(claimTotalSupply) * claimTokenPrice;
-      await claimTokenLauncher
-        .connect(claimUser)
-        .allocateTokens(claimProjectId, {
-          value: targetRaise,
-        });
+      const {
+        tokenLauncher,
+        user1,
+        projectId,
+        tokenAddress,
+        startDate,
+        endDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
 
-      await time.increaseTo(claimEndDate + 1);
+      await time.increaseTo(startDate + 1);
+      const targetRaise = BigInt(totalSupply) * tokenPrice;
+      await tokenLauncher.connect(user1).allocateTokens(projectId, {
+        value: targetRaise,
+      });
 
-      const expectedTokenAmount = targetRaise / claimTokenPrice;
-      const token = await ethers.getContractAt(
-        "LaunchedToken",
-        claimTokenAddress
-      );
+      await time.increaseTo(endDate + 1);
 
-      const beforeBalance = await token.balanceOf(claimUser.address);
+      const expectedTokenAmount = targetRaise / tokenPrice;
+      const token = await ethers.getContractAt("LaunchedToken", tokenAddress);
+      const beforeBalance = await token.balanceOf(user1.address);
 
-      await expect(
-        claimTokenLauncher.connect(claimUser).claimTokens(claimProjectId)
-      )
-        .to.emit(claimTokenLauncher, "TokensClaimed")
-        .withArgs(claimProjectId, claimUser.address, expectedTokenAmount);
+      await expect(tokenLauncher.connect(user1).claimTokens(projectId))
+        .to.emit(tokenLauncher, "TokensClaimed")
+        .withArgs(projectId, user1.address, expectedTokenAmount);
 
-      const afterBalance = await token.balanceOf(claimUser.address);
+      const afterBalance = await token.balanceOf(user1.address);
       expect(afterBalance - beforeBalance).to.equal(expectedTokenAmount);
     });
 
     it("Should clear user allocation after successful claim", async function () {
-      await time.increaseTo(claimStartDate + 1);
-      const targetRaise = BigInt(claimTotalSupply) * claimTokenPrice;
-      await claimTokenLauncher
-        .connect(claimUser)
-        .allocateTokens(claimProjectId, {
-          value: targetRaise,
-        });
+      const {
+        tokenLauncher,
+        user1,
+        projectId,
+        startDate,
+        endDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
 
-      await time.increaseTo(claimEndDate + 1);
+      await time.increaseTo(startDate + 1);
+      const targetRaise = BigInt(totalSupply) * tokenPrice;
+      await tokenLauncher.connect(user1).allocateTokens(projectId, {
+        value: targetRaise,
+      });
 
-      await claimTokenLauncher.connect(claimUser).claimTokens(claimProjectId);
+      await time.increaseTo(endDate + 1);
+      await tokenLauncher.connect(user1).claimTokens(projectId);
 
-      const userAllocationAmount = await claimTokenLauncher.tokenAllocations(
-        claimProjectId,
-        claimUser.address
+      const userAllocationAmount = await tokenLauncher.tokenAllocations(
+        projectId,
+        user1.address
       );
       expect(userAllocationAmount).to.equal(0);
     });
 
     it("Should allow multiple users to claim their tokens", async function () {
-      const [_, claimUser1, claimUser2] = await ethers.getSigners();
-      const targetRaise = BigInt(claimTotalSupply) * claimTokenPrice;
+      const {
+        tokenLauncher,
+        user1,
+        user2,
+        projectId,
+        tokenAddress,
+        startDate,
+        endDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
+
+      await time.increaseTo(startDate + 1);
+      const targetRaise = BigInt(totalSupply) * tokenPrice;
       const perUserAmount = targetRaise / BigInt(2);
-      const expectedTokenAmount = perUserAmount / claimTokenPrice;
-      const token = await ethers.getContractAt(
-        "LaunchedToken",
-        claimTokenAddress
-      );
+      const expectedTokenAmount = perUserAmount / tokenPrice;
 
-      await time.increaseTo(claimStartDate + 1);
+      await tokenLauncher.connect(user1).allocateTokens(projectId, {
+        value: perUserAmount,
+      });
+      await tokenLauncher.connect(user2).allocateTokens(projectId, {
+        value: perUserAmount,
+      });
 
-      await claimTokenLauncher
-        .connect(claimUser1)
-        .allocateTokens(claimProjectId, {
-          value: perUserAmount,
-        });
-      await claimTokenLauncher
-        .connect(claimUser2)
-        .allocateTokens(claimProjectId, {
-          value: perUserAmount,
-        });
+      await time.increaseTo(endDate + 1);
+      const token = await ethers.getContractAt("LaunchedToken", tokenAddress);
 
-      await time.increaseTo(claimEndDate + 1);
+      await tokenLauncher.connect(user1).claimTokens(projectId);
+      await tokenLauncher.connect(user2).claimTokens(projectId);
 
-      await claimTokenLauncher.connect(claimUser1).claimTokens(claimProjectId);
-      await claimTokenLauncher.connect(claimUser2).claimTokens(claimProjectId);
-
-      expect(await token.balanceOf(claimUser1.address)).to.equal(
+      expect(await token.balanceOf(user1.address)).to.equal(
         expectedTokenAmount
       );
-      expect(await token.balanceOf(claimUser2.address)).to.equal(
+      expect(await token.balanceOf(user2.address)).to.equal(
         expectedTokenAmount
       );
     });
 
     it("Should revert when attempting to claim for non-existent project", async function () {
+      const { tokenLauncher, user1, endDate } = await loadFixture(
+        smallSupplyTokenFixture
+      );
+
+      await time.increaseTo(endDate + 1);
       const nonExistentProjectId = 999;
-      await time.increaseTo(claimEndDate + 1);
 
       await expect(
-        claimTokenLauncher.connect(claimUser).claimTokens(nonExistentProjectId)
-      ).to.be.revertedWithCustomError(claimTokenLauncher, "ProjectNotFound");
+        tokenLauncher.connect(user1).claimTokens(nonExistentProjectId)
+      ).to.be.revertedWithCustomError(tokenLauncher, "ProjectNotFound");
     });
 
     it("Should revert when attempting to claim tokens before sale ends", async function () {
-      await time.increaseTo(claimStartDate + 1);
-      const targetRaise = BigInt(claimTotalSupply) * claimTokenPrice;
-      await claimTokenLauncher
-        .connect(claimUser)
-        .allocateTokens(claimProjectId, {
-          value: targetRaise,
-        });
+      const {
+        tokenLauncher,
+        user1,
+        projectId,
+        startDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
+
+      await time.increaseTo(startDate + 1);
+      const targetRaise = BigInt(totalSupply) * tokenPrice;
+      await tokenLauncher.connect(user1).allocateTokens(projectId, {
+        value: targetRaise,
+      });
 
       await expect(
-        claimTokenLauncher.connect(claimUser).claimTokens(claimProjectId)
-      ).to.be.revertedWithCustomError(claimTokenLauncher, "SaleNotEnded");
+        tokenLauncher.connect(user1).claimTokens(projectId)
+      ).to.be.revertedWithCustomError(tokenLauncher, "SaleNotEnded");
     });
 
     it("Should revert when attempting to claim tokens when target raise not met", async function () {
-      await time.increaseTo(claimStartDate + 1);
-      const partialRaise =
-        (BigInt(claimTotalSupply) * claimTokenPrice) / BigInt(2);
-      await claimTokenLauncher
-        .connect(claimUser)
-        .allocateTokens(claimProjectId, {
-          value: partialRaise,
-        });
+      const {
+        tokenLauncher,
+        user1,
+        projectId,
+        startDate,
+        endDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
 
-      await time.increaseTo(claimEndDate + 1);
+      await time.increaseTo(startDate + 1);
+      const partialRaise = (BigInt(totalSupply) * tokenPrice) / BigInt(2);
+      await tokenLauncher.connect(user1).allocateTokens(projectId, {
+        value: partialRaise,
+      });
+
+      await time.increaseTo(endDate + 1);
 
       await expect(
-        claimTokenLauncher.connect(claimUser).claimTokens(claimProjectId)
-      ).to.be.revertedWithCustomError(claimTokenLauncher, "TargetRaiseNotMet");
+        tokenLauncher.connect(user1).claimTokens(projectId)
+      ).to.be.revertedWithCustomError(tokenLauncher, "TargetRaiseNotMet");
     });
 
     it("Should revert when attempting to claim tokens without allocation", async function () {
-      await time.increaseTo(claimStartDate + 1);
-      const targetRaise = BigInt(claimTotalSupply) * claimTokenPrice;
-      const [_, otherUser] = await ethers.getSigners();
+      const {
+        tokenLauncher,
+        user1,
+        user2,
+        projectId,
+        startDate,
+        endDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
 
-      await claimTokenLauncher
-        .connect(otherUser)
-        .allocateTokens(claimProjectId, {
-          value: targetRaise,
-        });
+      await time.increaseTo(startDate + 1);
+      const targetRaise = BigInt(totalSupply) * tokenPrice;
 
-      await time.increaseTo(claimEndDate + 1);
+      await tokenLauncher.connect(user2).allocateTokens(projectId, {
+        value: targetRaise,
+      });
+
+      await time.increaseTo(endDate + 1);
 
       await expect(
-        claimTokenLauncher.connect(claimUser).claimTokens(claimProjectId)
-      ).to.be.revertedWithCustomError(claimTokenLauncher, "NoTokensToClaim");
+        tokenLauncher.connect(user1).claimTokens(projectId)
+      ).to.be.revertedWithCustomError(tokenLauncher, "NoTokensToClaim");
     });
 
     it("Should revert when attempting to claim tokens twice", async function () {
-      await time.increaseTo(claimStartDate + 1);
-      const targetRaise = BigInt(claimTotalSupply) * claimTokenPrice;
-      await claimTokenLauncher
-        .connect(claimUser)
-        .allocateTokens(claimProjectId, {
-          value: targetRaise,
-        });
+      const {
+        tokenLauncher,
+        user1,
+        projectId,
+        startDate,
+        endDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
 
-      await time.increaseTo(claimEndDate + 1);
+      await time.increaseTo(startDate + 1);
+      const targetRaise = BigInt(totalSupply) * tokenPrice;
+      await tokenLauncher.connect(user1).allocateTokens(projectId, {
+        value: targetRaise,
+      });
 
-      await claimTokenLauncher.connect(claimUser).claimTokens(claimProjectId);
+      await time.increaseTo(endDate + 1);
+      await tokenLauncher.connect(user1).claimTokens(projectId);
 
       await expect(
-        claimTokenLauncher.connect(claimUser).claimTokens(claimProjectId)
-      ).to.be.revertedWithCustomError(claimTokenLauncher, "NoTokensToClaim");
+        tokenLauncher.connect(user1).claimTokens(projectId)
+      ).to.be.revertedWithCustomError(tokenLauncher, "NoTokensToClaim");
     });
   });
 
