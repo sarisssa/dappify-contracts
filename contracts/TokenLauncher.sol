@@ -111,6 +111,10 @@ contract TokenLauncher {
     /// @param projectId The ID of the project to check
     modifier isRefundable(uint256 projectId) {
         Project storage project = projects[projectId];
+
+        if (project.tokenAddress == address(0)) {
+            revert ProjectNotFound(projectId);
+        }
         if (block.timestamp < project.startDate + MIN_DURATION) {
             revert RefundTooEarly();
         }
