@@ -180,7 +180,6 @@ describe("TokenLauncher", function () {
     const {
       tokenLauncher,
       owner,
-      projectId,
       tokenAddress,
       totalSupply,
       startDate,
@@ -509,7 +508,7 @@ describe("TokenLauncher", function () {
         value: initialEthAmount,
       });
 
-      // Try to allocate more than remaining
+      // Try to allocate more tokens than remaining
       const remainingTokens = 100;
       const excessAmount = 150;
       const ethAmount = BigInt(excessAmount) * tokenPrice;
@@ -773,7 +772,673 @@ describe("TokenLauncher", function () {
     });
   });
 
-  describe("Token Refund", function () {});
+  describe("Token Refund", function () {
+    it("Should allow user to refund tokens when sale fails to meet target", async function () {
+      const {
+        tokenLauncher,
+        user1,
+        projectId,
+        startDate,
+        endDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
 
-  describe("Withdraw Funds", function () {});
+      await time.increaseTo(startDate + 1);
+      const partialAmount = (BigInt(totalSupply) * tokenPrice) / BigInt(2);
+      await tokenLauncher.connect(user1).allocateTokens(projectId, {
+        value: partialAmount,
+      });
+
+      await time.increaseTo(endDate + 1);
+
+      const beforeBalance = await ethers.provider.getBalance(user1.address);
+      const tx = await tokenLauncher.connect(user1).refundTokens(projectId);
+      const receipt = await tx.wait();
+      const gasUsed = receipt!.gasUsed * receipt!.gasPrice;
+
+      const afterBalance = await ethers.provider.getBalance(user1.address);
+      expect(afterBalance + gasUsed - beforeBalance).to.equal(partialAmount);
+    });
+
+    it("Should clear user allocation after a successful refund", async function () {
+      const {
+        tokenLauncher,
+        user1,
+        projectId,
+        startDate,
+        endDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
+
+      await time.increaseTo(startDate + 1);
+      const partialAmount = (BigInt(totalSupply) * tokenPrice) / BigInt(2);
+      await tokenLauncher.connect(user1).allocateTokens(projectId, {
+        value: partialAmount,
+      });
+
+      await time.increaseTo(endDate + 1);
+      await tokenLauncher.connect(user1).refundTokens(projectId);
+
+      const allocation = await tokenLauncher.tokenAllocations(
+        projectId,
+        user1.address
+      );
+      expect(allocation).to.equal(0);
+    });
+
+    it("Should update project amountRaised after refund", async function () {
+      const {
+        tokenLauncher,
+        user1,
+        projectId,
+        startDate,
+        endDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
+
+      await time.increaseTo(startDate + 1);
+      const partialAmount = (BigInt(totalSupply) * tokenPrice) / BigInt(2);
+      await tokenLauncher.connect(user1).allocateTokens(projectId, {
+        value: partialAmount,
+      });
+
+      await time.increaseTo(endDate + 1);
+
+      const beforeProject = await tokenLauncher.getProjectWithUserInfo(
+        projectId,
+        user1.address
+      );
+      await tokenLauncher.connect(user1).refundTokens(projectId);
+      const afterProject = await tokenLauncher.getProjectWithUserInfo(
+        projectId,
+        user1.address
+      );
+
+      expect(afterProject.project.amountRaised).to.equal(
+        beforeProject.project.amountRaised - partialAmount
+      );
+    });
+
+    it("Should revert when attempting to refund before minimum duration", async function () {
+      const {
+        tokenLauncher,
+        user1,
+        projectId,
+        startDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
+
+      await time.increaseTo(startDate + 1);
+      const partialAmount = (BigInt(totalSupply) * tokenPrice) / BigInt(2);
+      await tokenLauncher.connect(user1).allocateTokens(projectId, {
+        value: partialAmount,
+      });
+
+      // Attempt refund before MIN_DURATION (30 days) has passed
+      await time.increaseTo(startDate + 25 * 24 * 60 * 60); // Only 25 days
+
+      await expect(
+        tokenLauncher.connect(user1).refundTokens(projectId)
+      ).to.be.revertedWithCustomError(tokenLauncher, "RefundTooEarly");
+    });
+
+    it("Should revert when attempting to refund from a successful sale", async function () {
+      const {
+        tokenLauncher,
+        user1,
+        projectId,
+        startDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
+
+      await time.increaseTo(startDate + 1);
+      const fullAmount = BigInt(totalSupply) * tokenPrice;
+      await tokenLauncher.connect(user1).allocateTokens(projectId, {
+        value: fullAmount,
+      });
+
+      // Move past minimum duration
+      await time.increaseTo(startDate + 31 * 24 * 60 * 60);
+
+      await expect(
+        tokenLauncher.connect(user1).refundTokens(projectId)
+      ).to.be.revertedWithCustomError(tokenLauncher, "TargetRaiseAchieved");
+    });
+
+    it("Should revert when attempting to refund without allocation", async function () {
+      const { tokenLauncher, user1, projectId, startDate } = await loadFixture(
+        smallSupplyTokenFixture
+      );
+
+      // Move past minimum duration
+      await time.increaseTo(startDate + 31 * 24 * 60 * 60);
+
+      await expect(
+        tokenLauncher.connect(user1).refundTokens(projectId)
+      ).to.be.revertedWithCustomError(tokenLauncher, "NoTokensToRefund");
+    });
+
+    it("Should revert when attempting to refund for a non-existent project", async function () {
+      const { tokenLauncher, user1, startDate } = await loadFixture(
+        smallSupplyTokenFixture
+      );
+
+      await time.increaseTo(startDate + 31 * 24 * 60 * 60);
+      const nonExistentProjectId = 999;
+
+      await expect(
+        tokenLauncher.connect(user1).refundTokens(nonExistentProjectId)
+      ).to.be.revertedWithCustomError(tokenLauncher, "ProjectNotFound");
+    });
+
+    it("Should revert when attempting to refund twice", async function () {
+      const {
+        tokenLauncher,
+        user1,
+        projectId,
+        startDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
+
+      await time.increaseTo(startDate + 1);
+      const partialAmount = (BigInt(totalSupply) * tokenPrice) / BigInt(2);
+      await tokenLauncher.connect(user1).allocateTokens(projectId, {
+        value: partialAmount,
+      });
+
+      await time.increaseTo(startDate + 31 * 24 * 60 * 60);
+
+      await tokenLauncher.connect(user1).refundTokens(projectId);
+
+      await expect(
+        tokenLauncher.connect(user1).refundTokens(projectId)
+      ).to.be.revertedWithCustomError(tokenLauncher, "NoTokensToRefund");
+    });
+  });
+
+  describe("Withdraw Funds", function () {
+    it("Should allow creator to withdraw funds after successful sale", async function () {
+      const {
+        tokenLauncher,
+        owner,
+        projectId,
+        startDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
+
+      await time.increaseTo(startDate + 1);
+      const targetRaise = BigInt(totalSupply) * tokenPrice;
+
+      // Fund the sale
+      await tokenLauncher.connect(owner).allocateTokens(projectId, {
+        value: targetRaise,
+      });
+
+      // Move past sale end date
+      await time.increaseTo(startDate + 31 * 24 * 60 * 60);
+
+      const beforeBalance = await ethers.provider.getBalance(owner.address);
+      const tx = await tokenLauncher.connect(owner).withdrawFunds(projectId);
+      const receipt = await tx.wait();
+      const gasUsed = receipt!.gasUsed * receipt!.gasPrice;
+
+      const expectedCreatorAmount = (targetRaise * BigInt(99)) / BigInt(100); // CREATOR_FEE_NUMERATOR / LAUNCHPAD_FEE_DENOMINATOR
+      const afterBalance = await ethers.provider.getBalance(owner.address);
+
+      expect(afterBalance + gasUsed - beforeBalance).to.equal(
+        expectedCreatorAmount
+      );
+    });
+
+    it("Should emit CreatorWithdraw event with correct values", async function () {
+      const {
+        tokenLauncher,
+        owner,
+        projectId,
+        startDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
+
+      await time.increaseTo(startDate + 1);
+      const targetRaise = BigInt(totalSupply) * tokenPrice;
+      await tokenLauncher.connect(owner).allocateTokens(projectId, {
+        value: targetRaise,
+      });
+
+      await time.increaseTo(startDate + 31 * 24 * 60 * 60);
+
+      const expectedCreatorAmount = (targetRaise * BigInt(99)) / BigInt(100);
+      const expectedLaunchpadFee = targetRaise - expectedCreatorAmount;
+
+      await expect(tokenLauncher.connect(owner).withdrawFunds(projectId))
+        .to.emit(tokenLauncher, "CreatorWithdraw")
+        .withArgs(
+          projectId,
+          owner.address,
+          expectedCreatorAmount,
+          expectedLaunchpadFee
+        );
+    });
+
+    it("Should mark project as withdrawn after a successful withdrawal", async function () {
+      const {
+        tokenLauncher,
+        owner,
+        projectId,
+        startDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
+
+      await time.increaseTo(startDate + 1);
+      const targetRaise = BigInt(totalSupply) * tokenPrice;
+      await tokenLauncher.connect(owner).allocateTokens(projectId, {
+        value: targetRaise,
+      });
+
+      await time.increaseTo(startDate + 31 * 24 * 60 * 60);
+      await tokenLauncher.connect(owner).withdrawFunds(projectId);
+
+      const projectInfo = await tokenLauncher.getProjectWithUserInfo(
+        projectId,
+        owner.address
+      );
+      expect(projectInfo.project.hasCreatorWithdrawn).to.be.true;
+    });
+    it("Should revert when attempting to withdraw from a non-existent project", async function () {
+      const { tokenLauncher, owner } = await loadFixture(
+        smallSupplyTokenFixture
+      );
+
+      const nonExistentProjectId = 999;
+
+      await expect(
+        tokenLauncher.connect(owner).withdrawFunds(nonExistentProjectId)
+      )
+        .to.be.revertedWithCustomError(tokenLauncher, "ProjectNotFound")
+        .withArgs(nonExistentProjectId);
+    });
+
+    it("Should revert with NotProjectCreator when non-creator attempts to withdraw", async function () {
+      const {
+        tokenLauncher,
+        owner,
+        user1,
+        projectId,
+        startDate,
+        endDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
+
+      // Fund the project to meet target raise
+      await time.increaseTo(startDate + 1);
+      const targetRaise = BigInt(totalSupply) * tokenPrice;
+      await tokenLauncher.connect(user1).allocateTokens(projectId, {
+        value: targetRaise,
+      });
+
+      await time.increaseTo(endDate + 1);
+
+      // User1 attempts to withdraw instead of owner (creator)
+      await expect(tokenLauncher.connect(user1).withdrawFunds(projectId))
+        .to.be.revertedWithCustomError(tokenLauncher, "NotProjectCreator")
+        .withArgs(user1.address, owner.address);
+    });
+
+    it("Should revert when attempting to withdraw before target raise is met", async function () {
+      const {
+        tokenLauncher,
+        owner,
+        projectId,
+        startDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
+
+      await time.increaseTo(startDate + 1);
+      const partialRaise = (BigInt(totalSupply) * tokenPrice) / BigInt(2);
+      await tokenLauncher.connect(owner).allocateTokens(projectId, {
+        value: partialRaise,
+      });
+
+      await time.increaseTo(startDate + 31 * 24 * 60 * 60);
+
+      const targetRaise = BigInt(totalSupply) * tokenPrice;
+      await expect(tokenLauncher.connect(owner).withdrawFunds(projectId))
+        .to.be.revertedWithCustomError(tokenLauncher, "TargetRaiseNotMet")
+        .withArgs(partialRaise, targetRaise);
+    });
+
+    it("Should revert when attempting to withdraw twice", async function () {
+      const {
+        tokenLauncher,
+        owner,
+        projectId,
+        startDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
+
+      await time.increaseTo(startDate + 1);
+      const targetRaise = BigInt(totalSupply) * tokenPrice;
+      await tokenLauncher.connect(owner).allocateTokens(projectId, {
+        value: targetRaise,
+      });
+
+      await time.increaseTo(startDate + 31 * 24 * 60 * 60);
+      await tokenLauncher.connect(owner).withdrawFunds(projectId);
+
+      await expect(
+        tokenLauncher.connect(owner).withdrawFunds(projectId)
+      ).to.be.revertedWithCustomError(tokenLauncher, "CreatorAlreadyWithdrew");
+    });
+  });
+  describe("Project Information Views", function () {
+    describe("getAllProjects", function () {
+      it("Should return empty array when no projects exist", async function () {
+        const { tokenLauncher } = await loadFixture(deployTokenLauncherFixture);
+        const projects = await tokenLauncher.getAllProjects();
+        expect(projects.length).to.equal(0);
+      });
+
+      it("Should return all created projects", async function () {
+        const {
+          tokenLauncher,
+          owner,
+          totalSupply,
+          startDate,
+          endDate,
+          tokenPrice,
+          name,
+          symbol,
+          projectName,
+          projectDescription,
+        } = await loadFixture(launchedTokenFixture);
+
+        await tokenLauncher.launchToken(
+          totalSupply,
+          startDate,
+          endDate,
+          tokenPrice,
+          name,
+          symbol + "2",
+          projectName,
+          projectDescription
+        );
+
+        await tokenLauncher.launchToken(
+          totalSupply,
+          startDate,
+          endDate,
+          tokenPrice,
+          name,
+          symbol + "3",
+          projectName,
+          projectDescription
+        );
+
+        const projects = await tokenLauncher.getAllProjects();
+        expect(projects.length).to.equal(3);
+        expect(projects[0].projectId).to.equal(1);
+        expect(projects[1].projectId).to.equal(2);
+        expect(projects[2].projectId).to.equal(3);
+
+        for (let i = 0; i < projects.length; i++) {
+          expect(projects[i].tokenAddress).to.not.equal(ethers.ZeroAddress);
+          expect(projects[i].totalSupply).to.equal(totalSupply);
+          expect(projects[i].startDate).to.equal(startDate);
+          expect(projects[i].endDate).to.equal(endDate);
+          expect(projects[i].tokenPrice).to.equal(tokenPrice);
+          expect(projects[i].creator).to.equal(owner.address);
+        }
+      });
+
+      it("Should handle deleted or non-existent projects", async function () {
+        const {
+          tokenLauncher,
+          totalSupply,
+          startDate,
+          endDate,
+          tokenPrice,
+          name,
+          symbol,
+          projectName,
+          projectDescription,
+        } = await loadFixture(launchedTokenFixture);
+
+        await tokenLauncher.launchToken(
+          totalSupply,
+          startDate,
+          endDate,
+          tokenPrice,
+          name,
+          symbol + "2",
+          projectName,
+          projectDescription
+        );
+
+        const projects = await tokenLauncher.getAllProjects();
+        expect(projects.length).to.equal(2);
+        expect(projects[0].projectId).to.equal(1);
+        expect(projects[1].projectId).to.equal(2);
+      });
+    });
+
+    describe("getProjectWithUserInfo", function () {
+      it("Should return correct project info for user with allocation", async function () {
+        const {
+          tokenLauncher,
+          user1,
+          projectId,
+          startDate,
+          tokenPrice,
+          totalSupply,
+        } = await loadFixture(smallSupplyTokenFixture);
+
+        await time.increaseTo(startDate + 1);
+        const allocationAmount = (BigInt(totalSupply) * tokenPrice) / BigInt(2);
+        await tokenLauncher.connect(user1).allocateTokens(projectId, {
+          value: allocationAmount,
+        });
+
+        const projectInfo = await tokenLauncher.getProjectWithUserInfo(
+          projectId,
+          user1.address
+        );
+
+        expect(projectInfo.totalSpent).to.equal(allocationAmount);
+        expect(projectInfo.tokenAllocationAmount).to.equal(
+          allocationAmount / tokenPrice
+        );
+        expect(projectInfo.availableTokens).to.equal(
+          BigInt(totalSupply) - allocationAmount / tokenPrice
+        );
+      });
+
+      it("Should return correct project info for user without allocation", async function () {
+        const { tokenLauncher, user1, projectId } = await loadFixture(
+          smallSupplyTokenFixture
+        );
+
+        const projectInfo = await tokenLauncher.getProjectWithUserInfo(
+          projectId,
+          user1.address
+        );
+
+        expect(projectInfo.totalSpent).to.equal(0);
+        expect(projectInfo.tokenAllocationAmount).to.equal(0);
+        expect(projectInfo.availableTokens).to.equal(
+          projectInfo.project.totalSupply
+        );
+      });
+
+      it("Should return correct project info for zero address", async function () {
+        const { tokenLauncher, projectId } = await loadFixture(
+          smallSupplyTokenFixture
+        );
+
+        const projectInfo = await tokenLauncher.getProjectWithUserInfo(
+          projectId,
+          ethers.ZeroAddress
+        );
+
+        expect(projectInfo.totalSpent).to.equal(0);
+        expect(projectInfo.tokenAllocationAmount).to.equal(0);
+        expect(projectInfo.availableTokens).to.equal(
+          projectInfo.project.totalSupply
+        );
+      });
+
+      it("Should return correct available tokens after multiple allocations", async function () {
+        const {
+          tokenLauncher,
+          user1,
+          user2,
+          projectId,
+          startDate,
+          tokenPrice,
+          totalSupply,
+        } = await loadFixture(smallSupplyTokenFixture);
+
+        await time.increaseTo(startDate + 1);
+        const allocationAmount = (BigInt(totalSupply) * tokenPrice) / BigInt(4); // 25% each
+
+        await tokenLauncher.connect(user1).allocateTokens(projectId, {
+          value: allocationAmount,
+        });
+        await tokenLauncher.connect(user2).allocateTokens(projectId, {
+          value: allocationAmount,
+        });
+
+        const projectInfo = await tokenLauncher.getProjectWithUserInfo(
+          projectId,
+          user1.address
+        );
+        const expectedAvailable =
+          BigInt(totalSupply) - (allocationAmount * BigInt(2)) / tokenPrice;
+
+        expect(projectInfo.availableTokens).to.equal(expectedAvailable);
+      });
+
+      it("Should revert when querying non-existent project", async function () {
+        const { tokenLauncher, user1 } = await loadFixture(
+          smallSupplyTokenFixture
+        );
+
+        const nonExistentProjectId = 999;
+
+        await expect(
+          tokenLauncher.getProjectWithUserInfo(
+            nonExistentProjectId,
+            user1.address
+          )
+        )
+          .to.be.revertedWithCustomError(tokenLauncher, "ProjectNotFound")
+          .withArgs(nonExistentProjectId);
+      });
+    });
+    describe("getProjectDetails", function () {
+      it("Should revert with ProjectNotFound for non-existent project", async function () {
+        const { tokenLauncher } = await loadFixture(smallSupplyTokenFixture);
+
+        const nonExistentProjectId = 999;
+
+        await expect(tokenLauncher.getProjectDetails(nonExistentProjectId))
+          .to.be.revertedWithCustomError(tokenLauncher, "ProjectNotFound")
+          .withArgs(nonExistentProjectId);
+      });
+
+      it("Should return same info as getProjectWithUserInfo with zero address", async function () {
+        const { tokenLauncher, projectId, totalSupply } = await loadFixture(
+          smallSupplyTokenFixture
+        );
+
+        const projectDetails = await tokenLauncher.getProjectDetails(projectId);
+        const projectWithUserInfo = await tokenLauncher.getProjectWithUserInfo(
+          projectId,
+          ethers.ZeroAddress
+        );
+
+        expect(projectDetails.project.projectId).to.equal(
+          projectWithUserInfo.project.projectId
+        );
+        expect(projectDetails.project.totalSupply).to.equal(
+          projectWithUserInfo.project.totalSupply
+        );
+        expect(projectDetails.project.startDate).to.equal(
+          projectWithUserInfo.project.startDate
+        );
+        expect(projectDetails.project.endDate).to.equal(
+          projectWithUserInfo.project.endDate
+        );
+        expect(projectDetails.project.tokenPrice).to.equal(
+          projectWithUserInfo.project.tokenPrice
+        );
+        expect(projectDetails.project.participantCount).to.equal(
+          projectWithUserInfo.project.participantCount
+        );
+        expect(projectDetails.project.amountRaised).to.equal(
+          projectWithUserInfo.project.amountRaised
+        );
+        expect(projectDetails.project.targetRaise).to.equal(
+          projectWithUserInfo.project.targetRaise
+        );
+        expect(projectDetails.project.tokenAddress).to.equal(
+          projectWithUserInfo.project.tokenAddress
+        );
+        expect(projectDetails.project.creator).to.equal(
+          projectWithUserInfo.project.creator
+        );
+        expect(projectDetails.project.projectName).to.equal(
+          projectWithUserInfo.project.projectName
+        );
+        expect(projectDetails.project.projectDescription).to.equal(
+          projectWithUserInfo.project.projectDescription
+        );
+        expect(projectDetails.project.hasCreatorWithdrawn).to.equal(
+          projectWithUserInfo.project.hasCreatorWithdrawn
+        );
+
+        expect(projectDetails.totalSpent).to.equal(0);
+        expect(projectDetails.tokenAllocationAmount).to.equal(0);
+        expect(projectDetails.availableTokens).to.equal(totalSupply);
+      });
+
+      it("Should return correct project details after state changes", async function () {
+        const {
+          tokenLauncher,
+          user1,
+          projectId,
+          startDate,
+          tokenPrice,
+          totalSupply,
+        } = await loadFixture(smallSupplyTokenFixture);
+
+        await time.increaseTo(startDate + 1);
+        const allocationAmount = (BigInt(totalSupply) * tokenPrice) / BigInt(2);
+        await tokenLauncher.connect(user1).allocateTokens(projectId, {
+          value: allocationAmount,
+        });
+
+        const projectDetails = await tokenLauncher.getProjectDetails(projectId);
+
+        expect(projectDetails.project.participantCount).to.equal(1);
+        expect(projectDetails.project.amountRaised).to.equal(allocationAmount);
+        expect(projectDetails.availableTokens).to.equal(
+          BigInt(totalSupply) - allocationAmount / tokenPrice
+        );
+        expect(projectDetails.totalSpent).to.equal(0);
+        expect(projectDetails.tokenAllocationAmount).to.equal(0);
+      });
+    });
+  });
 });
