@@ -7,12 +7,13 @@ import { ethers } from "hardhat";
 
 describe("TokenLauncher", function () {
   async function deployTokenLauncherFixture() {
-    const [owner, user1, user2] = await ethers.getSigners();
+    const [owner, user1, user2, user3, user4, user5] =
+      await ethers.getSigners();
     const TokenLauncher = await ethers.getContractFactory("TokenLauncher");
     const tokenLauncher = await TokenLauncher.deploy();
     await tokenLauncher.waitForDeployment();
 
-    return { tokenLauncher, owner, user1, user2 };
+    return { tokenLauncher, owner, user1, user2, user3, user4, user5 };
   }
 
   async function launchedTokenFixture() {
@@ -61,7 +62,7 @@ describe("TokenLauncher", function () {
     };
   }
   async function smallSupplyTokenFixture() {
-    const { tokenLauncher, owner, user1, user2 } =
+    const { tokenLauncher, owner, user1, user2, user3, user4, user5 } =
       await deployTokenLauncherFixture();
 
     const totalSupply = 1000;
@@ -93,6 +94,9 @@ describe("TokenLauncher", function () {
       owner,
       user1,
       user2,
+      user3,
+      user4,
+      user5,
       projectId,
       tokenAddress,
       totalSupply,
@@ -450,7 +454,48 @@ describe("TokenLauncher", function () {
       ).to.be.revertedWithCustomError(tokenLauncher, "SaleEnded");
     });
 
-    it("Should revert when attempting to allocate tokens with zero ETH", async function () {
+    it("Should revert when user attempts to buy after project expires", async function () {
+      const {
+        tokenLauncher,
+        user1,
+        user2,
+        user3,
+        user4,
+        projectId,
+        startDate,
+        endDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
+
+      await time.increaseTo(startDate + 1);
+
+      const amount1 = (BigInt(totalSupply) * tokenPrice) / BigInt(4);
+      await tokenLauncher.connect(user1).allocateTokens(projectId, {
+        value: amount1,
+      });
+
+      const amount2 = (BigInt(totalSupply) * tokenPrice) / BigInt(4);
+      await tokenLauncher.connect(user2).allocateTokens(projectId, {
+        value: amount2,
+      });
+
+      const amount3 = (BigInt(totalSupply) * tokenPrice) / BigInt(4);
+      await tokenLauncher.connect(user3).allocateTokens(projectId, {
+        value: amount3,
+      });
+
+      await time.increaseTo(endDate + 1);
+
+      const amount4 = (BigInt(totalSupply) * tokenPrice) / BigInt(4);
+      await expect(
+        tokenLauncher.connect(user4).allocateTokens(projectId, {
+          value: amount4,
+        })
+      ).to.be.revertedWithCustomError(tokenLauncher, "SaleEnded");
+    });
+
+    it("Should revert when attempting to purchase tokens zero ETH", async function () {
       const { tokenLauncher, user1, projectId, startDate } = await loadFixture(
         launchedTokenFixture
       );
@@ -520,6 +565,108 @@ describe("TokenLauncher", function () {
       )
         .to.be.revertedWithCustomError(tokenLauncher, "InsufficientTokens")
         .withArgs(remainingTokens, excessAmount);
+    });
+
+    it("Should handle FOMO buying pattern near end of sale", async function () {
+      const {
+        tokenLauncher,
+        user1,
+        user2,
+        user3,
+        user4,
+        user5,
+        projectId,
+        endDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
+
+      await time.increaseTo(endDate - 60); // 1 minute before end
+
+      const amount = (BigInt(totalSupply) * tokenPrice) / BigInt(5); // 20% each
+
+      // Rapid succession of purchase orders
+      await tokenLauncher
+        .connect(user1)
+        .allocateTokens(projectId, { value: amount });
+      await tokenLauncher
+        .connect(user2)
+        .allocateTokens(projectId, { value: amount });
+      await tokenLauncher
+        .connect(user3)
+        .allocateTokens(projectId, { value: amount });
+      await tokenLauncher
+        .connect(user4)
+        .allocateTokens(projectId, { value: amount });
+
+      // Last user tries to purchase tokens but sale has ended
+      await time.increaseTo(endDate + 1);
+
+      await expect(
+        tokenLauncher
+          .connect(user5)
+          .allocateTokens(projectId, { value: amount })
+      ).to.be.revertedWithCustomError(tokenLauncher, "SaleEnded");
+
+      const projectInfo = await tokenLauncher.getProjectDetails(projectId);
+      expect(projectInfo.project.participantCount).to.equal(4);
+      expect(projectInfo.project.amountRaised).to.equal(amount * BigInt(4));
+    });
+
+    it("Should handle whale buying pattern followed by smaller buyers", async function () {
+      const {
+        tokenLauncher,
+        user1, // Whale
+        user2,
+        user3,
+        user4,
+        projectId,
+        startDate,
+        tokenPrice,
+        totalSupply,
+      } = await loadFixture(smallSupplyTokenFixture);
+
+      await time.increaseTo(startDate + 1);
+
+      const whaleAmount =
+        (BigInt(totalSupply) * tokenPrice * BigInt(70)) / BigInt(100);
+      await tokenLauncher.connect(user1).allocateTokens(projectId, {
+        value: whaleAmount,
+      });
+
+      const smallAmount =
+        (BigInt(totalSupply) * tokenPrice * BigInt(10)) / BigInt(100); // 10% each
+
+      await tokenLauncher.connect(user2).allocateTokens(projectId, {
+        value: smallAmount,
+      });
+      await tokenLauncher.connect(user3).allocateTokens(projectId, {
+        value: smallAmount,
+      });
+
+      // Last buyer tries to buy more than remaining supply of tokens
+      const remainingSupply =
+        BigInt(totalSupply) * tokenPrice -
+        whaleAmount -
+        smallAmount * BigInt(2);
+      const tooLargeAmount = remainingSupply + ethers.parseEther("1");
+
+      await expect(
+        tokenLauncher.connect(user4).allocateTokens(projectId, {
+          value: tooLargeAmount,
+        })
+      )
+        .to.be.revertedWithCustomError(tokenLauncher, "InsufficientTokens")
+        .withArgs(
+          Number(remainingSupply / tokenPrice),
+          Number(tooLargeAmount / tokenPrice)
+        );
+
+      const projectInfo = await tokenLauncher.getProjectDetails(projectId);
+      expect(projectInfo.project.participantCount).to.equal(3);
+      expect(projectInfo.project.amountRaised).to.equal(
+        whaleAmount + smallAmount * BigInt(2)
+      );
     });
 
     it("Should maintain correct state after failed allocation attempt", async function () {
