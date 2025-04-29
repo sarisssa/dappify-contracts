@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "./LaunchedToken.sol";
+import "hardhat/console.sol";
 
 /// @title TokenLauncher - A contract for launching new ERC20 tokens
 /// @notice This contract allows users to create and launch new ERC20 tokens with customizable parameters
@@ -90,6 +91,7 @@ contract TokenLauncher {
 
     error SaleNotStarted();
     error SaleNotEnded();
+    error InvalidPaymentAmount(uint256 requiredPayment, uint256 messageValue);
     error InsufficientTokens(uint256 available, uint256 requested);
     error NoTokensToClaim();
     error TokenClaimFailed();
@@ -233,7 +235,10 @@ contract TokenLauncher {
      * - Updates tokenAllocations mapping for the user
      * - Increases project.amountRaised by msg.value
      */
-    function allocateTokens(uint256 projectId) external payable {
+    function allocateTokens(
+        uint256 projectId,
+        uint256 tokenAmount
+    ) external payable {
         Project storage project = projects[projectId];
 
         if (project.tokenAddress == address(0)) {
@@ -247,10 +252,14 @@ contract TokenLauncher {
         if (block.timestamp > project.endDate) {
             revert SaleEnded();
         }
-        uint256 tokenAmount = (msg.value) / project.tokenPrice;
 
-        if (tokenAmount == 0) {
+        if (tokenAmount < 1) {
             revert InvalidTokenAmount();
+        }
+
+        uint256 requiredPayment = project.tokenPrice * tokenAmount;
+        if (msg.value != requiredPayment) {
+            revert InvalidPaymentAmount(requiredPayment, msg.value);
         }
 
         uint256 tokensAllocated = project.amountRaised / project.tokenPrice;
@@ -336,6 +345,7 @@ contract TokenLauncher {
         uint256 refundAmount = tokenAllocationAmount * project.tokenPrice;
 
         tokenAllocations[projectId][msg.sender] = 0;
+
         project.amountRaised -= refundAmount;
 
         (bool success, ) = msg.sender.call{value: refundAmount}("");
