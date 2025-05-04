@@ -253,7 +253,11 @@ contract TokenLauncher {
             revert SaleEnded();
         }
 
-        if (tokenAmount < 1) {
+        if (tokenAmount < 1 * 10 ** 18) {
+            revert InvalidTokenAmount();
+        }
+
+        if (tokenAmount % (1 * 10 ** 18) != 0) {
             revert InvalidTokenAmount();
         }
 
